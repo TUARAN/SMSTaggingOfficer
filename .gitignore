@@ -35,6 +35,11 @@ src-tauri/gen/
 *.sqlite
 *.sqlite3
 
+# Selftest generated outputs
+tools/selftest_export.csv
+tools/selftest_export.jsonl
+tools/selftest.sqlite3
+
 # Local model files / binaries (keep resources/.keep)
 *.gguf
 *.bin
