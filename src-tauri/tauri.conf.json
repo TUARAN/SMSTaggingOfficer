@@ -1,0 +1,57 @@
+{
+  "$schema": "https://tauri.app/v1/schema.json",
+  "package": {
+    "productName": "短信智标官（SMS Tagging Officer）",
+    "version": "0.1.0"
+  },
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devPath": "http://localhost:1420",
+    "distDir": "../dist"
+  },
+  "tauri": {
+    "windows": [
+      {
+        "title": "短信智标官（SMS Tagging Officer）",
+        "width": 1280,
+        "height": 820,
+        "resizable": true
+      }
+    ],
+    "allowlist": {
+      "all": false,
+      "dialog": {
+        "open": true,
+        "save": true
+      },
+      "fs": {
+        "readFile": true,
+        "writeFile": true
+      },
+      "path": {
+        "all": true
+      },
+      "shell": {
+        "open": true
+      }
+    },
+    "bundle": {
+      "active": true,
+      "targets": "all",
+      "identifier": "com.example.smsto",
+      "icon": [
+        "icons/icon.png"
+      ],
+      "resources": [
+        "resources/*"
+      ]
+    },
+    "security": {
+      "csp": null
+    },
+    "updater": {
+      "active": false
+    }
+  }
+}

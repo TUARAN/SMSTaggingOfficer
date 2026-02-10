@@ -1,0 +1,50 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Logs
+*.log
+logs/
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# Node / Vite
+node_modules/
+dist/
+.vite/
+
+# TypeScript
+*.tsbuildinfo
+
+# Tauri / Rust
+# Cargo build output (both root and src-tauri)
+target/
+src-tauri/target/
+
+# Rust formatting / tooling
+**/*.rs.bk
+
+# Tauri generated artifacts
+src-tauri/gen/
+
+# Local databases (app writes to OS app_data_dir, but ignore if created in repo)
+*.sqlite
+*.sqlite3
+
+# Local model files / binaries (keep resources/.keep)
+*.gguf
+*.bin
+*.onnx
+*.pt
+*.pth
+src-tauri/resources/llama-cli*
+src-tauri/resources/*.gguf
+src-tauri/resources/*.bin
+
+# IDE
+.vscode/
+.idea/

@@ -1,0 +1,2 @@
+This directory is for fully-offline bundled binaries/models.
+Place `llama-cli` here (and optionally a default GGUF model).
