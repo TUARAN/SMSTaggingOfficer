@@ -43,6 +43,18 @@ impl Db {
     dao::Dao::new(self)
   }
 
+  pub fn path(&self) -> &PathBuf {
+    &self.path
+  }
+
+  pub fn ping(&self) -> Result<(), String> {
+    self
+      .conn
+      .lock()
+      .execute_batch("SELECT 1;")
+      .map_err(|e| e.to_string())
+  }
+
   pub fn conn(&self) -> parking_lot::MutexGuard<'_, Connection> {
     self.conn.lock()
   }

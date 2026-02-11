@@ -9,7 +9,7 @@ import SettingsPage from './pages/SettingsPage.vue'
 export const router = createRouter({
   history: createWebHashHistory(),
   routes: [
-    { path: '/', redirect: '/list' },
+    { path: '/', redirect: '/import' },
     { path: '/import', component: ImportPage },
     { path: '/batch', component: BatchPage },
     { path: '/list', component: ListPage },

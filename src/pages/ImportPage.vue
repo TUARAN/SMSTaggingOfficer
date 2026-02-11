@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { open } from '@tauri-apps/api/dialog'
 import { invoke } from '@tauri-apps/api/tauri'
+import { useRouter } from 'vue-router'
 
 type ImportPreview = {
   headers: string[]
@@ -16,11 +17,34 @@ type ColumnMapping = {
   source?: string
 }
 
+type ImportExecuteResult = {
+  total_rows: number
+  valid_rows: number
+  inserted: number
+  skipped_empty_content: number
+  first_insert_id: number | null
+  last_insert_id: number | null
+}
+
+type DbMeta = {
+  messages_count: number
+  messages_max_id: number
+}
+
 const filePath = ref<string | null>(null)
 const preview = ref<ImportPreview | null>(null)
 const mapping = ref<ColumnMapping>({ content: '' })
 const importing = ref(false)
 const importResult = ref<string>('')
+const execResult = ref<ImportExecuteResult | null>(null)
+const dbMeta = ref<DbMeta | null>(null)
+const dbMetaAfter = ref<DbMeta | null>(null)
+
+const router = useRouter()
+
+async function refreshDbMeta() {
+  dbMeta.value = await invoke<DbMeta>('messages_meta')
+}
 
 async function pickFile() {
   const selected = await open({
@@ -32,6 +56,10 @@ async function pickFile() {
   })
   if (typeof selected === 'string') {
     filePath.value = selected
+    importResult.value = ''
+    execResult.value = null
+    dbMetaAfter.value = null
+    await refreshDbMeta()
     preview.value = await invoke<ImportPreview>('import_preview', { path: selected })
     const headers = preview.value.headers
 
@@ -43,6 +71,9 @@ async function pickFile() {
     mapping.value.sender = pickFirst(['sender', '发送方', '机构', '品牌', 'brand'])
     mapping.value.phone = pickFirst(['phone', '手机号', '电话'])
     mapping.value.source = pickFirst(['source', '来源'])
+
+    // UX: selecting a file means "import it" (no extra button click).
+    await doImport()
   }
 }
 
@@ -55,16 +86,40 @@ async function doImport() {
   importing.value = true
   importResult.value = ''
   try {
-    const inserted = await invoke<number>('import_execute', {
+    const res = await invoke<ImportExecuteResult>('import_execute', {
       path: filePath.value,
       mapping: mapping.value
     })
-    importResult.value = `导入完成：新增 ${inserted} 条短信`
+    execResult.value = res
+    dbMetaAfter.value = await invoke<DbMeta>('messages_meta')
+    importResult.value = `导入完成：解析 ${res.total_rows} 行（有效 ${res.valid_rows}，跳过空内容 ${res.skipped_empty_content}），入库新增 ${res.inserted} 条短信`
   } catch (e: any) {
     importResult.value = `导入失败：${e?.message ?? String(e)}`
   } finally {
     importing.value = false
   }
+}
+
+onMounted(refreshDbMeta)
+
+function gotoBatchThisImport() {
+  const r = execResult.value
+  if (!r?.inserted) {
+    router.push({ path: '/batch' })
+    return
+  }
+  router.push({
+    path: '/batch',
+    query: {
+      mode: 'all',
+      id_min: String(r.first_insert_id ?? ''),
+      id_max: String(r.last_insert_id ?? '')
+    }
+  })
+}
+
+function gotoBatchUnlabeled() {
+  router.push({ path: '/batch', query: { mode: 'unlabeled' } })
 }
 </script>
 
@@ -76,8 +131,7 @@ async function doImport() {
         <div style="color: rgba(255,255,255,.65); margin-top: 6px;">支持 CSV / Excel（.xlsx），可做列映射，离线导入到 SQLite。</div>
       </div>
       <div class="row">
-        <button class="primary" @click="pickFile">选择文件</button>
-        <button :disabled="!filePath || importing" @click="doImport">开始导入</button>
+        <button class="primary" :disabled="importing" @click="pickFile">{{ filePath ? '重新选择' : '选择文件' }}</button>
       </div>
     </div>
 
@@ -88,6 +142,12 @@ async function doImport() {
         <div>
           <div style="font-weight: 700;">已选择文件</div>
           <div class="mono" style="color: rgba(255,255,255,.65); font-size: 12px; margin-top: 4px;">{{ filePath }}</div>
+          <div v-if="dbMeta" style="color: rgba(255,255,255,.65); font-size: 12px; margin-top: 6px;">
+            当前数据库：{{ dbMeta.messages_count }} 条 · 最大 ID：{{ dbMeta.messages_max_id }}（ID 是主键，不保证连续）
+          </div>
+          <div v-if="dbMetaAfter" style="color: rgba(255,255,255,.65); font-size: 12px; margin-top: 4px;">
+            导入后：{{ dbMetaAfter.messages_count }} 条 · 最大 ID：{{ dbMetaAfter.messages_max_id }}
+          </div>
         </div>
       </div>
 
@@ -134,6 +194,18 @@ async function doImport() {
 
       <div class="sep" />
       <div v-if="importResult" class="pill">{{ importResult }}</div>
+
+      <div v-if="execResult" class="row wrap" style="margin-top: 10px; gap: 10px;">
+        <span class="pill">解析总行={{ execResult.total_rows }}</span>
+        <span class="pill">有效={{ execResult.valid_rows }}</span>
+        <span class="pill">跳过空内容={{ execResult.skipped_empty_content }}</span>
+        <span class="pill">入库新增={{ execResult.inserted }}</span>
+      </div>
+
+      <div v-if="execResult" class="row wrap" style="margin-top: 12px; gap: 10px;">
+        <button class="primary" :disabled="importing" @click="gotoBatchThisImport">进入批处理（仅本次导入）</button>
+        <button :disabled="importing" @click="gotoBatchUnlabeled">进入批处理（未标注）</button>
+      </div>
 
       <div class="sep" />
       <div style="font-weight: 700; margin-bottom: 8px;">预览（前 20 行）</div>

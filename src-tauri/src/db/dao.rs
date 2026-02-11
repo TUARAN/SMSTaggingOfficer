@@ -46,6 +46,18 @@ impl<'a> Dao<'a> {
     Ok(conn.last_insert_rowid())
   }
 
+  pub fn messages_meta(&self) -> Result<(i64, i64), String> {
+    let conn = self.db.conn();
+    let (count, max_id): (i64, i64) = conn
+      .query_row(
+        "SELECT COUNT(1) as cnt, COALESCE(MAX(id), 0) as max_id FROM messages",
+        params![],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+      )
+      .map_err(|e| e.to_string())?;
+    Ok((count, max_id))
+  }
+
   pub fn get_message_content(&self, message_id: i64) -> Result<String, String> {
     let conn = self.db.conn();
     let content: String = conn
@@ -310,26 +322,49 @@ impl<'a> Dao<'a> {
     Ok(ListResult { total, rows })
   }
 
-  pub fn fetch_batch_candidates(&self, mode: &str, limit: i64) -> Result<Vec<i64>, String> {
-    let sql = match mode {
-      "all" => "SELECT id FROM messages ORDER BY id ASC LIMIT ?1".to_string(),
-      "unlabeled" => {
-        "SELECT m.id FROM messages m LEFT JOIN labels l ON l.message_id=m.id WHERE l.message_id IS NULL ORDER BY m.id ASC LIMIT ?1"
-          .to_string()
-      }
-      "needs_review" => {
-        "SELECT m.id FROM messages m JOIN labels l ON l.message_id=m.id WHERE l.needs_review=1 ORDER BY m.id ASC LIMIT ?1"
-          .to_string()
-      }
-      _ => {
-        "SELECT m.id FROM messages m LEFT JOIN labels l ON l.message_id=m.id WHERE l.message_id IS NULL ORDER BY m.id ASC LIMIT ?1"
-          .to_string()
-      }
+  pub fn fetch_batch_candidates(
+    &self,
+    mode: &str,
+    limit: i64,
+    id_min: Option<i64>,
+    id_max: Option<i64>,
+  ) -> Result<Vec<i64>, String> {
+    let mut where_sql: Vec<String> = vec![];
+    let mut args: Vec<rusqlite::types::Value> = vec![];
+
+    match mode {
+      "all" => {}
+      "unlabeled" => where_sql.push("l.message_id IS NULL".to_string()),
+      "needs_review" => where_sql.push("l.needs_review=1".to_string()),
+      _ => where_sql.push("l.message_id IS NULL".to_string()),
     };
+
+    if let Some(v) = id_min {
+      where_sql.push("m.id >= ?".to_string());
+      args.push(v.into());
+    }
+    if let Some(v) = id_max {
+      where_sql.push("m.id <= ?".to_string());
+      args.push(v.into());
+    }
+
+    let where_clause = if where_sql.is_empty() {
+      "".to_string()
+    } else {
+      format!("WHERE {}", where_sql.join(" AND "))
+    };
+
+    let sql = format!(
+      "SELECT m.id FROM messages m LEFT JOIN labels l ON l.message_id=m.id {where_clause} ORDER BY m.id ASC LIMIT ?"
+    );
+
+    args.push(limit.into());
 
     let conn = self.db.conn();
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let mut rows = stmt.query(params![limit]).map_err(|e| e.to_string())?;
+    let mut rows = stmt
+      .query(params_from_iter(args))
+      .map_err(|e| e.to_string())?;
     let mut ids = vec![];
     while let Some(r) = rows.next().map_err(|e| e.to_string())? {
       ids.push(r.get::<_, i64>(0).map_err(|e| e.to_string())?);

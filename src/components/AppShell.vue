@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
+import StatusBar from './StatusBar.vue'
 
 const route = useRoute()
 const active = computed(() => route.path)
@@ -39,6 +40,7 @@ const nav = [
 
     <main class="main">
       <RouterView />
+      <StatusBar />
     </main>
   </div>
 </template>

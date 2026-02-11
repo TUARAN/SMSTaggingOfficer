@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/tauri'
+import { useRoute } from 'vue-router'
 import ReviewDrawer from '../components/ReviewDrawer.vue'
 
 import type { Entities, Industry, LabelOutput, MessageRow, SmsType } from '../types'
@@ -26,6 +27,8 @@ const query = ref<ListQuery>({ limit: 50, offset: 0 })
 const rows = ref<MessageRow[]>([])
 const total = ref(0)
 const loading = ref(false)
+
+const route = useRoute()
 
 const selected = ref<MessageRow | null>(null)
 const drawerOpen = ref(false)
@@ -63,16 +66,46 @@ function next() {
   query.value.offset += query.value.limit
 }
 
+function applyRoutePrefill() {
+  const v = route.query.needs_review
+  if (v === undefined) return
+  const s = Array.isArray(v) ? v[0] : v
+  if (s === '1' || s === 'true') query.value.needs_review = true
+  else if (s === '0' || s === 'false') query.value.needs_review = false
+  else query.value.needs_review = null
+}
+
 watch(
   () => ({ ...query.value, offset: undefined, limit: undefined }),
   async () => {
+    const wasZero = query.value.offset === 0
     query.value.offset = 0
-    await load()
+    if (wasZero) await load()
   },
   { deep: true }
 )
 
-onMounted(load)
+watch(
+  () => [query.value.offset, query.value.limit],
+  async () => {
+    await load()
+  }
+)
+
+watch(
+  () => route.query.needs_review,
+  async () => {
+    applyRoutePrefill()
+    const wasZero = query.value.offset === 0
+    query.value.offset = 0
+    if (wasZero) await load()
+  }
+)
+
+onMounted(async () => {
+  applyRoutePrefill()
+  await load()
+})
 </script>
 
 <template>

@@ -5,9 +5,11 @@ import { invoke } from '@tauri-apps/api/tauri'
 
 type AppSettings = {
   provider: {
-    kind: 'llama_cli' | 'mock'
+    kind: 'llama_cli' | 'ollama' | 'mock'
     model_path: string | null
     llama_cli_path: string | null
+    ollama_base_url?: string | null
+    ollama_model?: string | null
     temperature: number
     max_tokens: number
   }
@@ -86,25 +88,44 @@ onMounted(load)
           <div style="color: rgba(255,255,255,.65)">Provider</div>
           <select v-model="settings.provider.kind">
             <option value="llama_cli">llama.cpp（llama-cli）</option>
+            <option value="ollama">Ollama（本机服务）</option>
             <option value="mock">Mock（仅规则/演示）</option>
           </select>
         </div>
 
-        <div class="kv" style="grid-column: 1 / -1;">
-          <div style="color: rgba(255,255,255,.65)">模型文件</div>
-          <div class="row" style="gap: 10px;">
-            <input v-model="settings.provider.model_path" placeholder="选择 *.gguf" />
-            <button @click="pickModel">选择</button>
+        <template v-if="settings.provider.kind === 'llama_cli'">
+          <div class="kv" style="grid-column: 1 / -1;">
+            <div style="color: rgba(255,255,255,.65)">模型文件</div>
+            <div class="row" style="gap: 10px;">
+              <input v-model="settings.provider.model_path" placeholder="选择 *.gguf" />
+              <button @click="pickModel">选择</button>
+            </div>
           </div>
-        </div>
 
-        <div class="kv" style="grid-column: 1 / -1;">
-          <div style="color: rgba(255,255,255,.65)">llama-cli 路径（可选）</div>
-          <div class="row" style="gap: 10px;">
-            <input v-model="settings.provider.llama_cli_path" placeholder="留空则使用打包内置（resources）" />
-            <button @click="pickLlamaCli">选择</button>
+          <div class="kv" style="grid-column: 1 / -1;">
+            <div style="color: rgba(255,255,255,.65)">llama-cli 路径（可选）</div>
+            <div class="row" style="gap: 10px;">
+              <input v-model="settings.provider.llama_cli_path" placeholder="留空则使用打包内置（resources）" />
+              <button @click="pickLlamaCli">选择</button>
+            </div>
           </div>
-        </div>
+        </template>
+
+        <template v-else-if="settings.provider.kind === 'ollama'">
+          <div class="kv" style="grid-column: 1 / -1;">
+            <div style="color: rgba(255,255,255,.65)">Ollama 地址</div>
+            <input v-model="settings.provider.ollama_base_url" placeholder="http://127.0.0.1:11434" />
+          </div>
+
+          <div class="kv" style="grid-column: 1 / -1;">
+            <div style="color: rgba(255,255,255,.65)">Ollama 模型名</div>
+            <input v-model="settings.provider.ollama_model" placeholder="llama3.2:1b" />
+          </div>
+
+          <div class="pill" style="grid-column: 1 / -1;">
+            提示：先执行 <span class="mono">ollama pull llama3.2:1b</span>，并确保 Ollama 正在运行。
+          </div>
+        </template>
 
         <div class="kv">
           <div style="color: rgba(255,255,255,.65)">temperature</div>

@@ -4,7 +4,7 @@ use std::{
   io::Write,
   path::PathBuf,
   sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicI64, Ordering},
     Arc,
   },
   thread,
@@ -32,6 +32,8 @@ pub struct BatchOptions {
   pub concurrency: usize,
   pub timeout_ms: u64,
   pub max_retries: i32,
+  pub id_min: Option<i64>,
+  pub id_max: Option<i64>,
 }
 
 impl Default for BatchOptions {
@@ -41,6 +43,8 @@ impl Default for BatchOptions {
       concurrency: 2,
       timeout_ms: 15000,
       max_retries: 1,
+      id_min: None,
+      id_max: None,
     }
   }
 }
@@ -51,6 +55,9 @@ pub struct BatchProgress {
   pub total: i64,
   pub done: i64,
   pub failed: i64,
+  pub rule_strong_hits: i64,
+  pub model_calls: i64,
+  pub model_failures: i64,
   pub current_message_id: Option<i64>,
   pub started_at_ms: Option<i64>,
   pub elapsed_ms: i64,
@@ -79,6 +86,9 @@ impl BatchManager {
           total: 0,
           done: 0,
           failed: 0,
+          rule_strong_hits: 0,
+          model_calls: 0,
+          model_failures: 0,
           current_message_id: None,
           started_at_ms: None,
           elapsed_ms: 0,
@@ -122,11 +132,17 @@ impl BatchManager {
       inner.failed_ids.clear();
       inner.pending.clear();
 
-      let ids = self.db.dao().fetch_batch_candidates(&options.mode, 100000)?;
+      let ids = self
+        .db
+        .dao()
+        .fetch_batch_candidates(&options.mode, 100000, options.id_min, options.id_max)?;
       inner.pending = ids.into();
       inner.progress.total = inner.pending.len() as i64;
       inner.progress.done = 0;
       inner.progress.failed = 0;
+      inner.progress.rule_strong_hits = 0;
+      inner.progress.model_calls = 0;
+      inner.progress.model_failures = 0;
       inner.progress.current_message_id = None;
       inner.progress.running = true;
       inner.progress.started_at_ms = Some(now_ms());
@@ -144,6 +160,10 @@ impl BatchManager {
   fn run_loop(self: Arc<Self>, options: BatchOptions, app: AppHandle) {
     let stop = { self.inner.lock().stop.clone() };
     let started = Instant::now();
+
+    let rule_strong_hits = Arc::new(AtomicI64::new(0));
+    let model_calls = Arc::new(AtomicI64::new(0));
+    let model_failures = Arc::new(AtomicI64::new(0));
 
     let (tx_job, rx_job) = std::sync::mpsc::channel::<i64>();
     let rx_job = Arc::new(Mutex::new(rx_job));
@@ -164,12 +184,28 @@ impl BatchManager {
       let stop2 = stop.clone();
       let provider_res = provider::build_provider(&settings_snapshot);
 
+      let rule_strong_hits2 = rule_strong_hits.clone();
+      let model_calls2 = model_calls.clone();
+      let model_failures2 = model_failures.clone();
+
       thread::spawn(move || {
         let provider = match provider_res {
           Ok(p) => Some(p),
           Err(e) => {
             let _ = append_log(&log_dir, &format!("provider build failed: {e}"));
             None
+          }
+        };
+
+        let hook = |d: BatchProgressDelta| match d {
+          BatchProgressDelta::RuleStrongHit => {
+            rule_strong_hits2.fetch_add(1, Ordering::Relaxed);
+          }
+          BatchProgressDelta::ModelCall => {
+            model_calls2.fetch_add(1, Ordering::Relaxed);
+          }
+          BatchProgressDelta::ModelFailure => {
+            model_failures2.fetch_add(1, Ordering::Relaxed);
           }
         };
 
@@ -187,7 +223,15 @@ impl BatchManager {
             continue;
           }
 
-          let res = process_one(&db, provider.as_deref(), &log_dir, id, timeout, max_retries);
+          let res = process_one(
+            &db,
+            provider.as_deref(),
+            &log_dir,
+            Some(&hook),
+            id,
+            timeout,
+            max_retries,
+          );
           let _ = tx_res.send((id, res));
         }
       });
@@ -201,7 +245,6 @@ impl BatchManager {
 
       let next_id = {
         let mut inner = self.inner.lock();
-        inner.progress.elapsed_ms = started.elapsed().as_millis() as i64;
         inner.pending.pop_front()
       };
 
@@ -216,23 +259,40 @@ impl BatchManager {
       } else {
         break;
       }
-
-      while let Ok((id, r)) = rx_res.try_recv() {
-        self.on_one_done(id, r);
-      }
-
-      self.emit_progress(&app);
-      thread::sleep(Duration::from_millis(4));
     }
 
+    // No more jobs to enqueue.
     drop(tx_job);
 
-    // Drain remaining results (best-effort)
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-      match rx_res.try_recv() {
+    // Keep collecting results and updating progress until completion.
+    let mut last_emit = Instant::now();
+    loop {
+      // Pull at most one result per tick (bounded UI/event spam).
+      match rx_res.recv_timeout(Duration::from_millis(50)) {
         Ok((id, r)) => self.on_one_done(id, r),
-        Err(_) => break,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+      }
+
+      {
+        let mut inner = self.inner.lock();
+        inner.progress.elapsed_ms = started.elapsed().as_millis() as i64;
+        inner.progress.rule_strong_hits = rule_strong_hits.load(Ordering::Relaxed);
+        inner.progress.model_calls = model_calls.load(Ordering::Relaxed);
+        inner.progress.model_failures = model_failures.load(Ordering::Relaxed);
+
+        if stop.load(Ordering::SeqCst) {
+          // allow stop to surface quickly in UI
+        }
+
+        if inner.progress.done >= inner.progress.total {
+          break;
+        }
+      }
+
+      if last_emit.elapsed() >= Duration::from_millis(200) {
+        self.emit_progress(&app);
+        last_emit = Instant::now();
       }
     }
 
@@ -241,6 +301,9 @@ impl BatchManager {
       inner.progress.running = false;
       inner.progress.current_message_id = None;
       inner.progress.elapsed_ms = started.elapsed().as_millis() as i64;
+      inner.progress.rule_strong_hits = rule_strong_hits.load(Ordering::Relaxed);
+      inner.progress.model_calls = model_calls.load(Ordering::Relaxed);
+      inner.progress.model_failures = model_failures.load(Ordering::Relaxed);
     }
 
     self.emit_progress(&app);
@@ -271,6 +334,7 @@ fn process_one(
   db: &Db,
   provider: Option<&dyn Provider>,
   log_dir: &PathBuf,
+  progress_hook: Option<&(dyn Fn(BatchProgressDelta) + Send + Sync)>,
   message_id: i64,
   timeout: Duration,
   max_retries: i32,
@@ -278,6 +342,12 @@ fn process_one(
   let content = db.dao().get_message_content(message_id)?;
 
   let rule = rules::run_rules(&content, None);
+
+  if let Some(h) = progress_hook {
+    if rule.strong_hit {
+      h(BatchProgressDelta::RuleStrongHit);
+    }
+  }
 
   let payload = ClassifyPayload {
     message_id,
@@ -291,10 +361,17 @@ fn process_one(
   let model_label: Option<LabelOutput> = if rule.strong_hit {
     None
   } else {
+    if let Some(h) = progress_hook {
+      h(BatchProgressDelta::ModelCall);
+    }
+
     let provider = provider.ok_or_else(|| "provider unavailable".to_string());
     let provider = match provider {
       Ok(p) => p,
       Err(e) => {
+        if let Some(h) = progress_hook {
+          h(BatchProgressDelta::ModelFailure);
+        }
         let fallback = LabelOutput::error_fallback(rule.entities.clone(), rule.signals.clone(), &e);
         let _ = db.dao().upsert_label_auto(message_id, &fallback);
         let _ = append_log(log_dir, &format!("message_id={message_id} provider unavailable: {e}"));
@@ -323,6 +400,9 @@ fn process_one(
 
     if got.is_none() {
       let e = last_err.unwrap_or_else(|| "unknown provider error".to_string());
+      if let Some(h) = progress_hook {
+        h(BatchProgressDelta::ModelFailure);
+      }
       let fallback = LabelOutput::error_fallback(rule.entities.clone(), rule.signals.clone(), &e);
       let _ = db.dao().upsert_label_auto(message_id, &fallback);
       let _ = append_log(log_dir, &format!("message_id={message_id} classify failed: {e}"));
@@ -340,6 +420,13 @@ fn process_one(
 
   db.dao().upsert_label_auto(message_id, &fused)?;
   Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BatchProgressDelta {
+  RuleStrongHit,
+  ModelCall,
+  ModelFailure,
 }
 
 fn append_log(log_dir: &PathBuf, line: &str) -> Result<(), String> {

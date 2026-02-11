@@ -21,6 +21,16 @@ pub struct ColumnMapping {
   pub source: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportExecuteResult {
+  pub total_rows: i64,
+  pub valid_rows: i64,
+  pub inserted: i64,
+  pub skipped_empty_content: i64,
+  pub first_insert_id: Option<i64>,
+  pub last_insert_id: Option<i64>,
+}
+
 pub fn preview(path: PathBuf, max_rows: usize) -> Result<ImportPreview, String> {
   let ext = path
     .extension()
@@ -35,7 +45,7 @@ pub fn preview(path: PathBuf, max_rows: usize) -> Result<ImportPreview, String> 
   }
 }
 
-pub fn execute(db: &Db, path: PathBuf, mapping: ColumnMapping) -> Result<i64, String> {
+pub fn execute(db: &Db, path: PathBuf, mapping: ColumnMapping) -> Result<ImportExecuteResult, String> {
   let ext = path
     .extension()
     .and_then(|s| s.to_str())
@@ -70,7 +80,7 @@ fn preview_csv(path: PathBuf, max_rows: usize) -> Result<ImportPreview, String> 
   Ok(ImportPreview { headers, rows })
 }
 
-fn execute_csv(db: &Db, path: PathBuf, mapping: ColumnMapping) -> Result<i64, String> {
+fn execute_csv(db: &Db, path: PathBuf, mapping: ColumnMapping) -> Result<ImportExecuteResult, String> {
   let mut rdr = csv::Reader::from_path(path).map_err(|e| e.to_string())?;
   let headers = rdr
     .headers()
@@ -101,24 +111,43 @@ fn execute_csv(db: &Db, path: PathBuf, mapping: ColumnMapping) -> Result<i64, St
     .map(|h| header_index(&headers, h))
     .transpose()?;
 
+  let mut total_rows = 0i64;
+  let mut valid_rows = 0i64;
   let mut inserted = 0i64;
+  let mut first_insert_id: Option<i64> = None;
+  let mut last_insert_id: Option<i64> = None;
+
   for rec in rdr.records() {
     let rec = rec.map_err(|e| e.to_string())?;
+    total_rows += 1;
     let content = rec.get(idx_content).unwrap_or("").trim();
     if content.is_empty() {
       continue;
     }
+
+    valid_rows += 1;
 
     let received_at = idx_received_at.and_then(|i| rec.get(i)).map(|s| s.trim()).filter(|s| !s.is_empty());
     let sender = idx_sender.and_then(|i| rec.get(i)).map(|s| s.trim()).filter(|s| !s.is_empty());
     let phone = idx_phone.and_then(|i| rec.get(i)).map(|s| s.trim()).filter(|s| !s.is_empty());
     let source = idx_source.and_then(|i| rec.get(i)).map(|s| s.trim()).filter(|s| !s.is_empty());
 
-    db.dao().insert_message(content, received_at, sender, phone, source)?;
+    let id = db.dao().insert_message(content, received_at, sender, phone, source)?;
+    if first_insert_id.is_none() {
+      first_insert_id = Some(id);
+    }
+    last_insert_id = Some(id);
     inserted += 1;
   }
 
-  Ok(inserted)
+  Ok(ImportExecuteResult {
+    total_rows,
+    valid_rows,
+    inserted,
+    skipped_empty_content: total_rows - valid_rows,
+    first_insert_id,
+    last_insert_id,
+  })
 }
 
 fn preview_xlsx(path: PathBuf, max_rows: usize) -> Result<ImportPreview, String> {
@@ -153,7 +182,7 @@ fn preview_xlsx(path: PathBuf, max_rows: usize) -> Result<ImportPreview, String>
   Ok(ImportPreview { headers, rows })
 }
 
-fn execute_xlsx(db: &Db, path: PathBuf, mapping: ColumnMapping) -> Result<i64, String> {
+fn execute_xlsx(db: &Db, path: PathBuf, mapping: ColumnMapping) -> Result<ImportExecuteResult, String> {
   let mut wb = open_workbook_auto(&path).map_err(|e| e.to_string())?;
   let sheet_name = wb
     .sheet_names()
@@ -191,13 +220,21 @@ fn execute_xlsx(db: &Db, path: PathBuf, mapping: ColumnMapping) -> Result<i64, S
     .map(|h| header_index(&headers, h))
     .transpose()?;
 
+  let mut total_rows = 0i64;
+  let mut valid_rows = 0i64;
   let mut inserted = 0i64;
+  let mut first_insert_id: Option<i64> = None;
+  let mut last_insert_id: Option<i64> = None;
+
   for row in rows_iter {
+    total_rows += 1;
     let content = row.get(idx_content).map(cell_to_string).unwrap_or_default();
     let content = content.trim();
     if content.is_empty() {
       continue;
     }
+
+    valid_rows += 1;
 
     let received_at = idx_received_at
       .and_then(|i| row.get(i))
@@ -220,17 +257,29 @@ fn execute_xlsx(db: &Db, path: PathBuf, mapping: ColumnMapping) -> Result<i64, S
       .map(|s| s.trim().to_string())
       .filter(|s| !s.is_empty());
 
-    db.dao().insert_message(
+    let id = db.dao().insert_message(
       content,
       received_at.as_deref(),
       sender.as_deref(),
       phone.as_deref(),
       source.as_deref(),
     )?;
+
+    if first_insert_id.is_none() {
+      first_insert_id = Some(id);
+    }
+    last_insert_id = Some(id);
     inserted += 1;
   }
 
-  Ok(inserted)
+  Ok(ImportExecuteResult {
+    total_rows,
+    valid_rows,
+    inserted,
+    skipped_empty_content: total_rows - valid_rows,
+    first_insert_id,
+    last_insert_id,
+  })
 }
 
 fn header_index(headers: &[String], name: &str) -> Result<usize, String> {

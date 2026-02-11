@@ -1,13 +1,16 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/tauri'
 import { listen } from '@tauri-apps/api/event'
+import { useRoute, useRouter } from 'vue-router'
 
 type BatchOptions = {
   mode: 'all' | 'unlabeled' | 'needs_review'
   concurrency: number
   timeout_ms: number
   max_retries: number
+  id_min?: number
+  id_max?: number
 }
 
 type BatchProgress = {
@@ -15,6 +18,9 @@ type BatchProgress = {
   total: number
   done: number
   failed: number
+  rule_strong_hits: number
+  model_calls: number
+  model_failures: number
   current_message_id: number | null
   started_at_ms: number | null
   elapsed_ms: number
@@ -32,10 +38,18 @@ const progress = ref<BatchProgress>({
   total: 0,
   done: 0,
   failed: 0,
+  rule_strong_hits: 0,
+  model_calls: 0,
+  model_failures: 0,
   current_message_id: null,
   started_at_ms: null,
   elapsed_ms: 0
 })
+
+const router = useRouter()
+const route = useRoute()
+const showCompleted = ref(false)
+const completedSummary = ref('')
 
 const busy = computed(() => progress.value.running)
 const pct = computed(() => {
@@ -48,6 +62,7 @@ async function refreshStatus() {
 }
 
 async function start() {
+  showCompleted.value = false
   await invoke('batch_start', { options: options.value })
   await refreshStatus()
 }
@@ -63,15 +78,59 @@ async function retryFailed() {
 }
 
 onMounted(async () => {
+  const q = route.query
+  const mode = (Array.isArray(q.mode) ? q.mode[0] : q.mode) as any
+  if (mode === 'all' || mode === 'unlabeled' || mode === 'needs_review') {
+    options.value.mode = mode
+  }
+  const idMinRaw = Array.isArray(q.id_min) ? q.id_min[0] : q.id_min
+  const idMaxRaw = Array.isArray(q.id_max) ? q.id_max[0] : q.id_max
+  const idMin = idMinRaw != null ? Number(idMinRaw) : NaN
+  const idMax = idMaxRaw != null ? Number(idMaxRaw) : NaN
+  if (Number.isFinite(idMin)) options.value.id_min = idMin
+  if (Number.isFinite(idMax)) options.value.id_max = idMax
+
   await refreshStatus()
   await listen<BatchProgress>('batch_progress', (e) => {
     progress.value = e.payload
   })
 })
+
+watch(
+  () => progress.value.running,
+  (running, prev) => {
+    if (prev === true && running === false && progress.value.total > 0 && progress.value.done >= progress.value.total) {
+      const p = progress.value
+      completedSummary.value = `完成：${p.done}/${p.total} · 失败${p.failed} · 规则强命中${p.rule_strong_hits} · 模型调用${p.model_calls}（失败${p.model_failures}）`
+      showCompleted.value = true
+    }
+  }
+)
+
+function gotoList() {
+  router.push({ path: '/list' })
+}
+
+function gotoReview() {
+  router.push({ path: '/list', query: { needs_review: '1' } })
+}
 </script>
 
 <template>
   <div class="page">
+    <div v-if="showCompleted" class="card" style="border: 1px solid rgba(56, 211, 159, 0.35);">
+      <div class="row wrap" style="justify-content: space-between; align-items: center; gap: 10px;">
+        <div>
+          <div style="font-weight: 800;">批处理完成</div>
+          <div style="color: rgba(255,255,255,.75); margin-top: 4px;">{{ completedSummary }}</div>
+        </div>
+        <div class="row wrap" style="gap: 10px;">
+          <button @click="gotoList">去列表</button>
+          <button class="primary" @click="gotoReview">去复核（needs_review）</button>
+        </div>
+      </div>
+    </div>
+
     <div class="row wrap" style="justify-content: space-between; align-items: flex-end;">
       <div>
         <h2 style="margin: 0;">批处理</h2>
@@ -117,6 +176,9 @@ onMounted(async () => {
           <span class="pill">状态：{{ progress.running ? '运行中' : '空闲' }}</span>
           <span class="pill">进度：{{ progress.done }}/{{ progress.total }}（{{ pct }}%）</span>
           <span class="pill">失败：{{ progress.failed }}</span>
+          <span class="pill">规则强命中：{{ progress.rule_strong_hits }}</span>
+          <span class="pill">模型调用：{{ progress.model_calls }}</span>
+          <span class="pill">模型失败：{{ progress.model_failures }}</span>
           <span class="pill">当前：{{ progress.current_message_id ?? '-' }}</span>
           <span class="pill">耗时：{{ Math.floor(progress.elapsed_ms / 1000) }}s</span>
         </div>
