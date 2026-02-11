@@ -86,6 +86,11 @@ npm run tauri -- dev
 - 映射 `content` 列（必填）
 - 其他列可选：`received_at / sender / phone / source`
 
+导入示例：
+- 英文表头示例：`samples/sms_samples.csv`（自测也用它）
+- 中文表头示例（20条）：`samples/top20_import_example.csv`
+  - 在导入页把 `content` 映射到 `短信内容`
+
 2) **批处理** 页：
 - `mode`：
   - `unlabeled`（默认）：仅处理未打标

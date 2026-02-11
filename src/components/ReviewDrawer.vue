@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/tauri'
-import type { Entities, Industry, LabelOutput, MessageRow, SmsType } from '../pages/ListPage'
+import type { Entities, Industry, LabelOutput, MessageRow, SmsType } from '../types'
 
 const props = defineProps<{ open: boolean; row: MessageRow }>()
 const emit = defineEmits<{ (e: 'close'): void; (e: 'saved'): void }>()

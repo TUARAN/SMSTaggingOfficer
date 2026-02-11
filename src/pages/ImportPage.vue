@@ -34,11 +34,15 @@ async function pickFile() {
     filePath.value = selected
     preview.value = await invoke<ImportPreview>('import_preview', { path: selected })
     const headers = preview.value.headers
-    mapping.value.content = headers.includes('content') ? 'content' : (headers[0] ?? '')
-    mapping.value.received_at = headers.includes('received_at') ? 'received_at' : undefined
-    mapping.value.sender = headers.includes('sender') ? 'sender' : undefined
-    mapping.value.phone = headers.includes('phone') ? 'phone' : undefined
-    mapping.value.source = headers.includes('source') ? 'source' : undefined
+
+    const pickFirst = (candidates: string[]) => candidates.find((h) => headers.includes(h))
+
+    mapping.value.content =
+      pickFirst(['content', '短信内容', '内容', 'message', 'text']) ?? (headers[0] ?? '')
+    mapping.value.received_at = pickFirst(['received_at', '时间', '日期', 'receivedAt'])
+    mapping.value.sender = pickFirst(['sender', '发送方', '机构', '品牌', 'brand'])
+    mapping.value.phone = pickFirst(['phone', '手机号', '电话'])
+    mapping.value.source = pickFirst(['source', '来源'])
   }
 }
 
